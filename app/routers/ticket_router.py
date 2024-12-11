@@ -1,13 +1,23 @@
+# app/routers/ticket_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from crouton import SQLAlchemyCRUDRouter
 from app.core.database import get_db
-from app.models.ticket import Ticket, TicketStatus
+from app.models.ticket import Ticket, TicketStatus, TicketPriority
 from app.schemas.ticket import TicketCreate, TicketResponse, TicketUpdate
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
-ticket_router = SQLAlchemyCRUDRouter(
+# Custom router to handle stats separately
+class CustomTicketRouter(SQLAlchemyCRUDRouter):
+    def add_api_route(self, path, endpoint, **kwargs):
+        # Add a custom route for stats
+        if path == "/stats":
+            kwargs['response_model'] = Dict[str, Any]
+        return super().add_api_route(path, endpoint, **kwargs)
+
+# Create a Crouton CRUD Router for Tickets
+ticket_router = CustomTicketRouter(
     schema=TicketResponse,
     create_schema=TicketCreate,
     update_schema=TicketUpdate,
@@ -16,30 +26,69 @@ ticket_router = SQLAlchemyCRUDRouter(
     prefix='tickets'
 )
 
+# Add a custom stats endpoint
 @ticket_router.get("/stats", response_model=Dict[str, Any])
 def get_ticket_stats(db: Session = Depends(get_db)):
+    """
+    Get comprehensive ticket statistics
+    """
     try:
+        # Count tickets by status
         status_counts = (
             db.query(Ticket.status, func.count(Ticket.id))
             .group_by(Ticket.status)
             .all()
         )
         
+        # Count tickets by priority
+        priority_counts = (
+            db.query(Ticket.priority, func.count(Ticket.id))
+            .group_by(Ticket.priority)
+            .all()
+        )
+        
+        # Convert status and priority counts to dictionaries
         status_breakdown = {
             str(status): count for status, count in status_counts
         }
         
+        priority_breakdown = {
+            str(priority): count for priority, count in priority_counts
+        }
+        
+        # Additional statistics
         stats = {
             "total_tickets": db.query(Ticket).count(),
             "status_breakdown": status_breakdown,
+            "priority_breakdown": priority_breakdown,
             "ticket_stats": {
                 "open_tickets": db.query(Ticket).filter(Ticket.status == TicketStatus.OPEN).count(),
                 "in_progress_tickets": db.query(Ticket).filter(Ticket.status == TicketStatus.IN_PROGRESS).count(),
                 "resolved_tickets": db.query(Ticket).filter(Ticket.status == TicketStatus.RESOLVED).count(),
                 "closed_tickets": db.query(Ticket).filter(Ticket.status == TicketStatus.CLOSED).count(),
+            },
+            "priority_stats": {
+                "low_priority": db.query(Ticket).filter(Ticket.priority == TicketPriority.LOW).count(),
+                "medium_priority": db.query(Ticket).filter(Ticket.priority == TicketPriority.MEDIUM).count(),
+                "high_priority": db.query(Ticket).filter(Ticket.priority == TicketPriority.HIGH).count(),
+                "critical_priority": db.query(Ticket).filter(Ticket.priority == TicketPriority.CRITICAL).count(),
             }
         }
         
         return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Override the default read method to handle custom routing
+@ticket_router.get("/{item_id}", response_model=Optional[TicketResponse])
+def read_ticket(
+    item_id: int, 
+    db: Session = Depends(get_db)
+):
+    """
+    Read a specific ticket by ID
+    """
+    ticket = db.query(Ticket).filter(Ticket.id == item_id).first()
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
