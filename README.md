@@ -16,7 +16,7 @@ pip install -r requirements.txt
 
 4. Run the application:
 ```bash
-uvicorn app.main:app --reload
+python run.py
 ```
 
 ## Features
